@@ -493,6 +493,32 @@ pub trait Constraint {
     fn parse(self, input: &mut Segments<'_>) -> Option<Self::Output>;
 }
 
+pub struct InputString;
+
+impl Constraint for InputString {
+    type Output = String;
+
+    fn extend_name(&self, callback: &mut impl FnMut(Cow<'static, str>)) {
+        callback(Cow::Borrowed("<string>"));
+    }
+
+    fn parse(self, input: &mut Segments<'_>) -> Option<Self::Output> {
+        input.next().map(|v| v.to_string())
+    }
+}
+
+impl Constraint for String {
+    type Output = Self;
+
+    fn extend_name(&self, callback: &mut impl FnMut(Cow<'static, str>)) {
+        callback(Cow::Owned(self.clone()));
+    }
+
+    fn parse(self, chunks: &mut Segments<'_>) -> Option<Self::Output> {
+        (chunks.next() == Some(&&self)).then_some(self)
+    }
+}
+
 impl Constraint for &'static str {
     type Output = Self;
 
