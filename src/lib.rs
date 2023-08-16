@@ -215,12 +215,12 @@ impl<'input> Ctx<'_, 'input> {
     }
 
     #[must_use = "Without using the return value, using this command will always yield an error"]
-    pub fn command<C: ConstrainedArg>(&mut self, constraint: C) -> Command<'_, 'input> {
+    pub fn command<C: ConstrainedArg<'input>>(&mut self, constraint: C) -> Command<'_, 'input> {
         Command(self.data_command(constraint).map(|_| ()))
     }
 
     #[must_use = "Without using the return value, using this command will always yield an error"]
-    pub fn data_command<C: ConstrainedArg>(&mut self, constraint: C) -> DataCommand<'_, 'input, C::Output> {
+    pub fn data_command<C: ConstrainedArg<'input>>(&mut self, constraint: C) -> DataCommand<'_, 'input, C::Output> {
         match &mut self.0 {
             CtxInner::PickCommand {
                 input,
@@ -373,11 +373,11 @@ impl<'r, 'input> Command<'r, 'input> {
         }
     }
 
-    pub fn arg<T: Arg>(self) -> DataCommand<'r, 'input, T> {
+    pub fn arg<T: Arg<'input>>(self) -> DataCommand<'r, 'input, T> {
         self.constrained_arg(unconstrained::<T>())
     }
 
-    pub fn constrained_arg<SubC: ConstrainedArg>(self, sub_c: SubC) -> DataCommand<'r, 'input, SubC::Output> {
+    pub fn constrained_arg<SubC: ConstrainedArg<'input>>(self, sub_c: SubC) -> DataCommand<'r, 'input, SubC::Output> {
         self.0.constrained_arg(sub_c).map(|(_, v)| v)
     }
 
@@ -425,11 +425,11 @@ impl<'r, 'input, T> DataCommand<'r, 'input, T> {
         }
     }
 
-    pub fn arg<V: Arg>(self) -> DataCommand<'r, 'input, (T, V)> {
+    pub fn arg<V: Arg<'input>>(self) -> DataCommand<'r, 'input, (T, V)> {
         self.constrained_arg(unconstrained::<V>())
     }
 
-    pub fn constrained_arg<SubC: ConstrainedArg>(mut self, sub_c: SubC) -> DataCommand<'r, 'input, (T, SubC::Output)> {
+    pub fn constrained_arg<SubC: ConstrainedArg<'input>>(mut self, sub_c: SubC) -> DataCommand<'r, 'input, (T, SubC::Output)> {
         match std::mem::replace(&mut self.0, CommandInner::Skip) {
             CommandInner::PickCommand { finished, data, mut input } => {
                 if finished.is_none() {
@@ -689,26 +689,83 @@ impl<T> ControlFlow<'_, T> {
     }
 }
 
-pub trait Arg {
+pub trait Arg<'a> {
     fn help(fmt: &mut HelpFmt);
-    fn parse(input: &mut Segments<'_>) -> Option<Self> where Self: Sized;
+    fn parse(input: &mut Segments<'a>) -> Option<Self> where Self: Sized;
 }
 
-impl Arg for String {
+impl<'a, T: Arg<'a>> Arg<'a> for Option<T> {
+    fn help(fmt: &mut HelpFmt) {
+        fmt.push_word("(");
+        T::help(fmt);
+        fmt.push_word(")?");
+    }
+
+    fn parse(input: &mut Segments<'a>) -> Option<Self> where Self: Sized {
+        let old_segments = input.clone();
+        match T::parse(input) {
+            Some(v) => {
+                Some(Some(v))
+            }
+            None => {
+                *input = old_segments;
+                Some(None)
+            }
+        }
+    }
+}
+
+impl<'a, T: Arg<'a>> Arg<'a> for Vec<T> {
+    fn help(fmt: &mut HelpFmt) {
+        fmt.push_word("(");
+        T::help(fmt);
+        fmt.push_word(")*");
+    }
+
+    fn parse(input: &mut Segments<'a>) -> Option<Self> where Self: Sized {
+        let vector = std::iter::from_fn(|| T::parse(input)).collect::<Vec<_>>();
+        Some(vector)
+    }
+}
+
+impl<'a, const N: usize, T: Arg<'a>> Arg<'a> for [T; N] {
+    fn help(fmt: &mut HelpFmt) {
+        for _ in 0..N {
+            T::help(fmt);
+        }
+    }
+
+    fn parse(input: &mut Segments<'a>) -> Option<Self> where Self: Sized {
+        let vector = (0..N).map(|_| T::parse(input)).collect::<Option<Vec<_>>>()?;
+        vector.try_into().ok()
+    }
+}
+
+impl<'a> Arg<'a> for &'a str {
     fn help(fmt: &mut HelpFmt) {
         fmt.push_word("<string>");
     }
 
-    fn parse(input: &mut Segments<'_>) -> Option<Self> where Self: Sized {
+    fn parse(input: &mut Segments<'a>) -> Option<Self> where Self: Sized {
+        input.next()
+    }
+}
+
+impl<'a> Arg<'a> for String {
+    fn help(fmt: &mut HelpFmt) {
+        fmt.push_word("<string>");
+    }
+
+    fn parse(input: &mut Segments<'a>) -> Option<Self> where Self: Sized {
         input.next().map(String::from)
     }
 }
 
-pub trait ConstrainedArg {
+pub trait ConstrainedArg<'a> {
     type Output;
 
     fn help(&self, fmt: &mut HelpFmt);
-    fn parse(&self, input: &mut Segments<'_>) -> Option<Self::Output>;
+    fn parse(&self, input: &mut Segments<'a>) -> Option<Self::Output>;
 }
 
 pub fn either<A, B>(a: A, b: B) -> Either<A, B> {
@@ -717,10 +774,10 @@ pub fn either<A, B>(a: A, b: B) -> Either<A, B> {
 
 pub struct Either<A, B>(A, B);
 
-impl<A, B> ConstrainedArg for Either<A, B>
+impl<'a, A, B> ConstrainedArg<'a> for Either<A, B>
 where
-    A: ConstrainedArg,
-    B: ConstrainedArg<Output = A::Output>,
+    A: ConstrainedArg<'a>,
+    B: ConstrainedArg<'a, Output = A::Output>,
 {
     type Output = A::Output;
 
@@ -733,7 +790,7 @@ where
         fmt.push_word("]");
     }
 
-    fn parse(&self, input: &mut Segments<'_>) -> Option<Self::Output> {
+    fn parse(&self, input: &mut Segments<'a>) -> Option<Self::Output> {
         let Either(a, b) = self;
 
         {
@@ -756,31 +813,31 @@ where
     }
 }
 
-impl ConstrainedArg for String {
-    type Output = Self;
+impl<'a> ConstrainedArg<'a> for String {
+    type Output = ();
 
     fn help(&self, fmt: &mut HelpFmt) {
         fmt.push_word(&self);
     }
 
-    fn parse(&self, chunks: &mut Segments<'_>) -> Option<Self::Output> {
-        (chunks.next() == Some(self)).then_some(self.clone())
+    fn parse(&self, chunks: &mut Segments<'a>) -> Option<Self::Output> {
+        (chunks.next() == Some(self)).then_some(())
     }
 }
 
-impl ConstrainedArg for &'static str {
-    type Output = Self;
+impl<'a> ConstrainedArg<'a> for &str {
+    type Output = ();
 
     fn help(&self, fmt: &mut HelpFmt) {
         fmt.push_word(&self);
     }
 
-    fn parse(&self, chunks: &mut Segments<'_>) -> Option<Self::Output> {
-        (chunks.next() == Some(&self)).then_some(self)
+    fn parse(&self, chunks: &mut Segments<'a>) -> Option<Self::Output> {
+        (chunks.next() == Some(&self)).then_some(())
     }
 }
 
-impl<T> ConstrainedArg for Range<T>
+impl<'a, T> ConstrainedArg<'a> for Range<T>
 where
     T: std::fmt::Display + FromStr + PartialOrd,
 {
@@ -790,7 +847,7 @@ where
         fmt.push_word(&format!("<number {}..{}>", self.start, self.end));
     }
 
-    fn parse(&self, chunks: &mut Segments<'_>) -> Option<Self::Output> {
+    fn parse(&self, chunks: &mut Segments<'a>) -> Option<Self::Output> {
         chunks.next()
             .and_then(|chunk| chunk.parse().ok())
             .filter(|v| self.contains(v))
@@ -800,7 +857,7 @@ where
 macro_rules! impl_tuples {
     ($($n:ident: $t:ident),*) => {
         #[allow(warnings)]
-        impl<$($t: ConstrainedArg),*> ConstrainedArg for ($($t,)*) {
+        impl<'a, $($t: ConstrainedArg<'a>),*> ConstrainedArg<'a> for ($($t,)*) {
             type Output = ($($t::Output,)*);
 
             fn help(&self, fmt: &mut HelpFmt) {
@@ -810,7 +867,7 @@ macro_rules! impl_tuples {
                 )*
             }
 
-            fn parse(&self, chunks: &mut Segments<'_>) -> Option<Self::Output> {
+            fn parse(&self, chunks: &mut Segments<'a>) -> Option<Self::Output> {
                 let ($($n,)*) = self;
                 $(
                     let $n = $n.parse(chunks)?;
@@ -820,14 +877,14 @@ macro_rules! impl_tuples {
         }
 
         #[allow(warnings)]
-        impl<$($t: Arg),*> Arg for ($($t,)*) {
+        impl<'a, $($t: Arg<'a>),*> Arg<'a> for ($($t,)*) {
             fn help(fmt: &mut HelpFmt) {
                 $(
                     $t::help(fmt);
                 )*
             }
 
-            fn parse(chunks: &mut Segments<'_>) -> Option<Self> {
+            fn parse(chunks: &mut Segments<'a>) -> Option<Self> {
                 $(
                     let $n = $t::parse(chunks)?;
                 )*
@@ -851,9 +908,9 @@ pub fn unconstrained<T>() -> Unconstrained<T> {
     Unconstrained(std::marker::PhantomData)
 }
 
-impl<T> ConstrainedArg for Unconstrained<T>
+impl<'a, T> ConstrainedArg<'a> for Unconstrained<T>
 where
-    T: Arg,
+    T: Arg<'a>,
 {
     type Output = T;
 
@@ -861,7 +918,7 @@ where
         <T as Arg>::help(fmt);
     }
 
-    fn parse(&self, input: &mut Segments<'_>) -> Option<Self::Output> {
+    fn parse(&self, input: &mut Segments<'a>) -> Option<Self::Output> {
         <T as Arg>::parse(input)
     }
 }

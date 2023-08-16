@@ -222,6 +222,9 @@ conso::user_loop(|ctx, control_flow| {
         });
 });
 ```
+As opposed to `args`, the closure here takes an extra argument called `control_flow`, that
+lets you tell conso when the loop should be finished using `quit`. This also allows data to be
+passed to the caller. Other than that, it works exactly the same.
 
 ### Aliases
 Some commands are so common that you might want a shorter name for them. Since command names are really
@@ -235,10 +238,6 @@ conso::user_loop(|ctx, control_flow| {
         });
 });
 ```
-
-As opposed to `args`, the closure here takes an extra argument called `control_flow`, that
-lets you tell conso when the loop should be finished using `quit`. This also allows data to be
-passed to the caller. Other than that, it works exactly the same.
 
 ### Behind the scenes
 The way the help auto-generation works is a bit cheeky; and a hint can be found in the signature
