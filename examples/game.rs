@@ -17,33 +17,33 @@ fn main() {
         ],
     };
 
-    conso::user_loop(|ctx| {
+    conso::user_loop(|ctx, control_flow| {
         ctx.command("w")
             .description("Move forward")
-            .run_with(|ctx| {
+            .run(|| {
                 game.player_y += 1;
-                ctx.quit(());
+                control_flow.quit(());
             });
 
         ctx.command("s")
             .description("Move backwards")
-            .run_with(|ctx| {
+            .run(|| {
                 game.player_y -= 1;
-                ctx.quit(());
+                control_flow.quit(());
             });
 
         ctx.command("a")
             .description("Move left")
-            .run_with(|ctx| {
+            .run(|| {
                 game.player_x -= 1;
-                ctx.quit(());
+                control_flow.quit(());
             });
 
         ctx.command("d")
             .description("Move right")
-            .run_with(|ctx| {
+            .run(|| {
                 game.player_x += 1;
-                ctx.quit(());
+                control_flow.quit(());
             });
 
         ctx.command("inv")
@@ -82,8 +82,8 @@ fn manage_inventory(ctx: &mut conso::Ctx, game: &mut Game) {
     ctx.command("add")
         .description("Adds an item to your inventory")
         .arg(conso::InputString)
-        .run_with(|ctx| {
+        .run_with(|data| {
             println!("Added item to the inventory!");
-            game.inventory.push(ctx.data().1.clone());
+            game.inventory.push(data.1.clone());
         });
 }

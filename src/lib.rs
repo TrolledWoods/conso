@@ -133,8 +133,26 @@
 //! ```
 //!
 //! ### Interactivity
-//! Sometimes just command line arguments aren't enough. We might want a loop where the user can
-//! input data.
+//! Sometimes just command line arguments aren't enough. We might want to allow the user to input
+//! commands in a loop. As it happens [`user_loop`] exists just for this purpose!
+//!
+//! ```
+//! conso::user_loop(|ctx, control_flow| {
+//!     ctx.command("greet")
+//!         .run(|| {
+//!             println!("Hello world!");
+//!         });
+//!
+//!     ctx.command("quit")
+//!         .run(|| {
+//!             control_flow.quit(());
+//!         });
+//! });
+//! ```
+//!
+//! As opposed to [`args`], the closure here takes an extra argument called `control_flow`, that
+//! lets you tell conso when the loop should be finished using `quit`. This also allows data to be
+//! passed to the caller.
 //!
 //! ## Behind the scenes
 //! The way this auto-generation works is a bit cheeky; and a hint can be found in the signature
@@ -154,6 +172,15 @@
 //! commands, while also getting nice help information for free! The main thing to keep in mind is
 //! not to run complex logic without being inside of a `run` call, since that logic probably should
 //! not run when `help` is called.
+//!
+//! The idea of the `control_flow` parameter inside of [`user_loop`] has a few big advantages;
+//! one is that it allows [`Ctx`] to remain generic-less, which is a life-saver when grouping
+//! commands together. It also allows nested user loops affect the control flows of parent user
+//! loops easily. Originally the idea was to put a generic parameter on [`Ctx`] describing whether
+//! it was a loop or not, and if it was a loop what return it had, but that was a pain so I'm much
+//! happier with this approach. Originally [`Command`] and [`DataCommand`] were also going to be the same
+//! type but with generics describing whether or not they had data attached, but that was scrapped
+//! in favor of two types, with [`Command`] just being a thin wrapper over [`DataCommand`] instead.
 //!
 
 use std::io::Write;
@@ -184,7 +211,7 @@ pub fn parse(segments: &[&str], mut handler: impl FnMut(&mut Ctx<'_, '_>)) {
 
 /// Queries for the user for input in a loop, until a command the user runs
 /// asks the loop to quit.
-pub fn user_loop<Result>(mut handler: impl FnMut(&mut Ctx<'_, '_, Result>)) -> Result {
+pub fn user_loop<T>(mut handler: impl FnMut(&mut Ctx<'_, '_>, &mut ControlFlow<'_, T>)) -> T {
     let mut input = String::new();
     loop {
         input.clear();
@@ -197,20 +224,25 @@ pub fn user_loop<Result>(mut handler: impl FnMut(&mut Ctx<'_, '_, Result>)) -> R
             depth: 0,
         };
 
+        let mut result = None;
+        let mut control_flow = ControlFlow {
+            result: Some(&mut result),
+        };
+
         let mut finished = None;
-        pick_sub_command(&mut input, &mut finished, &mut handler, true);
-        if let Some(FinishedState::Okay(Some(result))) = finished {
-            break result;
-        }
+        pick_sub_command(&mut input, &mut finished, |ctx| handler(ctx, &mut control_flow), true);
         if let Some(finished) = finished {
             print_finished_state(&segments, finished);
+        }
+        if let Some(result) = result {
+            break result;
         }
     }
 }
 
-fn print_finished_state<Result>(segments: &[&str], finished_state: FinishedState<Result>) {
+fn print_finished_state(segments: &[&str], finished_state: FinishedState) {
     match finished_state {
-        FinishedState::Okay(_) => {}
+        FinishedState::Okay => {}
         FinishedState::Help { help } => {
             println!("# Help information");
             help.print_children(0);
@@ -238,7 +270,7 @@ fn print_finished_state<Result>(segments: &[&str], finished_state: FinishedState
     }
 }
 
-fn pick_sub_command<'input, Result>(input: &mut Segments<'input>, finished: &mut Option<FinishedState<Result>>, mut handler: impl FnMut(&mut Ctx<'_, 'input, Result>), require_finish: bool) {
+fn pick_sub_command<'input>(input: &mut Segments<'input>, finished: &mut Option<FinishedState>, mut handler: impl FnMut(&mut Ctx<'_, 'input>), require_finish: bool) {
     if matches!(input.iter.as_slice(), ["help"]) {
         let mut help = HelpTree::default();
         let mut ctx = Ctx(CtxInner::BuildHelpInfo { help: &mut help });
@@ -294,8 +326,8 @@ impl<'a> Segments<'a> {
 }
 
 #[derive(Debug)]
-pub enum FinishedState<Result> {
-    Okay(Option<Result>),
+pub enum FinishedState {
+    Okay,
     Help {
         help: HelpTree,
     },
@@ -307,25 +339,25 @@ pub enum FinishedState<Result> {
 }
 
 /// The base struct to build "command trees".
-pub struct Ctx<'r, 'input, Result = ()>(CtxInner<'r, 'input, Result>);
+pub struct Ctx<'r, 'input>(CtxInner<'r, 'input>);
 
-enum CtxInner<'r, 'input, Result> {
+enum CtxInner<'r, 'input> {
     PickCommand {
         input: Segments<'input>,
-        finished: &'r mut Option<FinishedState<Result>>,
+        finished: &'r mut Option<FinishedState>,
     },
     BuildHelpInfo {
         help: &'r mut HelpTree,
     },
 }
 
-impl<'input, Result> Ctx<'_, 'input, Result> {
-    pub fn otherwise(&mut self) -> Command<'_, 'input, Result, ()> {
+impl<'input> Ctx<'_, 'input> {
+    pub fn otherwise(&mut self) -> Command<'_, 'input> {
         self.command(())
     }
 
     #[must_use = "Without using the return value, using this command will always yield an error"]
-    pub fn command<C: Constraint>(&mut self, constraint: C) -> Command<'_, 'input, Result, C> {
+    pub fn data_command<C: Constraint>(&mut self, constraint: C) -> DataCommand<'_, 'input, C::Output> {
         match &mut self.0 {
             CtxInner::PickCommand {
                 input,
@@ -334,14 +366,14 @@ impl<'input, Result> Ctx<'_, 'input, Result> {
                 let mut input = input.clone();
                 match constraint.parse(&mut input) {
                     Some(data) => {
-                        Command(CommandInner::PickCommand {
+                        DataCommand(CommandInner::PickCommand {
                             input,
                             data: Some(data),
                             finished,
                         })
                     }
                     None => {
-                        Command(CommandInner::Skip)
+                        DataCommand(CommandInner::Skip)
                     }
                 }
             }
@@ -349,33 +381,40 @@ impl<'input, Result> Ctx<'_, 'input, Result> {
                 help,
             } => {
                 help.branches.push(HelpTree::default());
-                Command(CommandInner::BuildHelpInfo {
-                    constraint,
-                    help: help.branches.last_mut().expect("We just pushed a branch, it should exist"),
+                let sub_help = help.branches.last_mut().expect("We just pushed a branch, it should exist");
+                constraint.extend_name(&mut |part| sub_help.path_segment.push(part));
+                DataCommand(CommandInner::BuildHelpInfo {
+                    help: sub_help,
                 })
             }
         }
     }
+
+    #[must_use = "Without using the return value, using this command will always yield an error"]
+    pub fn command<C: Constraint>(&mut self, constraint: C) -> Command<'_, 'input> {
+        Command(self.data_command(constraint).map(|_| ()))
+    }
 }
 
-pub struct Command<'r, 'input, Result, C: Constraint>(CommandInner<'r, 'input, Result, C>);
+pub struct Command<'r, 'input>(DataCommand<'r, 'input, ()>);
 
-enum CommandInner<'r, 'input, Result, C: Constraint> {
+pub struct DataCommand<'r, 'input, T>(CommandInner<'r, 'input, T>);
+
+enum CommandInner<'r, 'input, T> {
     PickCommand {
         input: Segments<'input>,
-        data: Option<C::Output>,
-        finished: &'r mut Option<FinishedState<Result>>,
+        data: Option<T>,
+        finished: &'r mut Option<FinishedState>,
     },
     Skip,
     BuildHelpInfo {
-        constraint: C,
         help: &'r mut HelpTree,
     },
 }
 
-impl<'r, 'input, Result, C: Constraint> Command<'r, 'input, Result, C> {
+impl<'r, 'input> Command<'r, 'input> {
     pub fn description(mut self, desc: &'static str) -> Self {
-        match self.0 {
+        match self.0.0 {
             CommandInner::BuildHelpInfo { ref mut help, .. } => {
                 help.descriptions.push(Cow::Borrowed(desc));
             }
@@ -385,8 +424,8 @@ impl<'r, 'input, Result, C: Constraint> Command<'r, 'input, Result, C> {
         self
     }
 
-    pub fn sub_commands(mut self, mut handler: impl FnMut(&mut Ctx<'_, 'input, Result>)) -> Self {
-        match &mut self.0 {
+    pub fn sub_commands(mut self, mut handler: impl FnMut(&mut Ctx<'_, 'input>)) -> Self {
+        match &mut self.0.0 {
             CommandInner::PickCommand { input, finished, .. } => {
                 pick_sub_command(input, *finished, handler, false);
             }
@@ -402,53 +441,8 @@ impl<'r, 'input, Result, C: Constraint> Command<'r, 'input, Result, C> {
         self
     }
 
-    pub fn arg<SubC: Constraint>(mut self, sub_c: SubC) -> Command<'r, 'input, Result, (C, SubC)> {
-        match std::mem::replace(&mut self.0, CommandInner::Skip) {
-            CommandInner::PickCommand { finished, data, mut input } => {
-                if finished.is_none() {
-                    let orig_depth = input.depth;
-                    match sub_c.parse(&mut input) {
-                        Some(new_data) => {
-                            Command(CommandInner::PickCommand {
-                                finished,
-                                data: data.map(|data| (data, new_data)),
-                                input,
-                            })
-                        }
-                        None => {
-                            *finished = Some(FinishedState::Error {
-                                depth: orig_depth,
-                                message: String::from("Invalid argument"),
-                                help: None,
-                            });
-
-                            Command(CommandInner::PickCommand {
-                                finished,
-                                data: None,
-                                input,
-                            })
-                        }
-                    }
-                } else {
-                    Command(CommandInner::PickCommand {
-                        finished,
-                        data: None,
-                        input,
-                    })
-                }
-            }
-            CommandInner::Skip => Command(CommandInner::Skip),
-            CommandInner::BuildHelpInfo { help, constraint } => {
-                Command(CommandInner::BuildHelpInfo {
-                    help,
-                    constraint: (constraint, sub_c),
-                })
-            }
-        }
-    }
-
-    pub fn user_loop<SubResult>(mut self, mut handler: impl FnMut(&mut Ctx<'_, '_, SubResult>)) -> Self {
-        match &mut self.0 {
+    pub fn user_loop(mut self, mut handler: impl FnMut(&mut Ctx<'_, '_>, &mut ControlFlow<'_, ()>)) {
+        match &mut self.0.0 {
             CommandInner::PickCommand { finished, input, .. } => {
                 if finished.is_none() {
                     if input.iter.next().is_some() {
@@ -457,7 +451,6 @@ impl<'r, 'input, Result, C: Constraint> Command<'r, 'input, Result, C> {
                             message: String::from("Excess arguments passed"),
                             help: None,
                         });
-                        return self;
                     }
 
                     let mut input = String::new();
@@ -472,17 +465,23 @@ impl<'r, 'input, Result, C: Constraint> Command<'r, 'input, Result, C> {
                             depth: 0,
                         };
 
+                        let mut result = None;
+                        let mut control_flow = ControlFlow {
+                            result: Some(&mut result),
+                        };
+
                         let mut finished = None;
-                        pick_sub_command(&mut input, &mut finished, &mut handler, true);
-                        if let Some(FinishedState::Okay(Some(result))) = finished {
-                            break result;
-                        }
+                        pick_sub_command(&mut input, &mut finished, |ctx| handler(ctx, &mut control_flow), true);
                         if let Some(finished) = finished {
                             print_finished_state(&segments, finished);
                         }
+
+                        if result.is_some() {
+                            break;
+                        }
                     };
 
-                    **finished = Some(FinishedState::Okay(None));
+                    **finished = Some(FinishedState::Okay);
                 }
             }
             CommandInner::Skip => {}
@@ -492,14 +491,96 @@ impl<'r, 'input, Result, C: Constraint> Command<'r, 'input, Result, C> {
                 let mut ctx = Ctx(CtxInner::BuildHelpInfo {
                     help,
                 });
-                handler(&mut ctx);
+                handler(&mut ctx, &mut ControlFlow { result: None });
             }
+        }
+    }
+
+    pub fn arg<SubC: Constraint>(self, sub_c: SubC) -> DataCommand<'r, 'input, SubC::Output> {
+        self.0.arg(sub_c).map(|(_, v)| v)
+    }
+
+    pub fn run(self, handler: impl FnOnce()) {
+        self.0.run(|()| handler());
+    }
+}
+
+impl<'r, 'input, T> DataCommand<'r, 'input, T> {
+    pub fn description(mut self, desc: &'static str) -> Self {
+        match self.0 {
+            CommandInner::BuildHelpInfo { ref mut help, .. } => {
+                help.descriptions.push(Cow::Borrowed(desc));
+            }
+            _ => {}
         }
 
         self
     }
 
-    pub fn run_with(mut self, handler: impl FnOnce(&mut RunCtx<'_, C::Output, Result>)) -> Self {
+    fn map<OutT>(mut self, mapper: impl FnOnce(T) -> OutT) -> DataCommand<'r, 'input, OutT> {
+        match std::mem::replace(&mut self.0, CommandInner::Skip) {
+            CommandInner::PickCommand { input, data, finished } => {
+                DataCommand(CommandInner::PickCommand {
+                    input,
+                    data: data.map(mapper),
+                    finished,
+                })
+            }
+            CommandInner::Skip => DataCommand(CommandInner::Skip),
+            CommandInner::BuildHelpInfo { help } => {
+                DataCommand(CommandInner::BuildHelpInfo {
+                    help,
+                })
+            }
+        }
+    }
+
+    pub fn arg<SubC: Constraint>(mut self, sub_c: SubC) -> DataCommand<'r, 'input, (T, SubC::Output)> {
+        match std::mem::replace(&mut self.0, CommandInner::Skip) {
+            CommandInner::PickCommand { finished, data, mut input } => {
+                if finished.is_none() {
+                    let orig_depth = input.depth;
+                    match sub_c.parse(&mut input) {
+                        Some(new_data) => {
+                            DataCommand(CommandInner::PickCommand {
+                                finished,
+                                data: data.map(|data| (data, new_data)),
+                                input,
+                            })
+                        }
+                        None => {
+                            *finished = Some(FinishedState::Error {
+                                depth: orig_depth,
+                                message: String::from("Invalid argument"),
+                                help: None,
+                            });
+
+                            DataCommand(CommandInner::PickCommand {
+                                finished,
+                                data: None,
+                                input,
+                            })
+                        }
+                    }
+                } else {
+                    DataCommand(CommandInner::PickCommand {
+                        finished,
+                        data: None,
+                        input,
+                    })
+                }
+            }
+            CommandInner::Skip => DataCommand(CommandInner::Skip),
+            CommandInner::BuildHelpInfo { help } => {
+                sub_c.extend_name(&mut |part| help.path_segment.push(part));
+                DataCommand(CommandInner::BuildHelpInfo {
+                    help,
+                })
+            }
+        }
+    }
+
+    pub fn run(mut self, handler: impl FnOnce(&T)) {
         match &mut self.0 {
             CommandInner::PickCommand { finished, data, input, .. } => {
                 if finished.is_none() {
@@ -509,33 +590,23 @@ impl<'r, 'input, Result, C: Constraint> Command<'r, 'input, Result, C> {
                             message: String::from("Excess arguments passed"),
                             help: None,
                         });
-                        return self;
+                        return;
                     }
 
-                    let mut run_ctx = RunCtx {
-                        data: data.as_ref().expect("If our data is none we should be in a finished state"),
-                        result: None,
-                    };
-                    handler(&mut run_ctx);
+                    handler(data.as_ref().expect("If our data is none we should be in a finished state"));
 
-                    **finished = Some(FinishedState::Okay(run_ctx.result));
+                    **finished = Some(FinishedState::Okay);
                 }
             }
             CommandInner::Skip => {}
-            CommandInner::BuildHelpInfo { help, .. } => {
+            CommandInner::BuildHelpInfo { help } => {
                 help.is_standalone_command = true;
             }
         }
-
-        self
-    }
-
-    pub fn run(self, handler: impl FnOnce()) -> Self {
-        self.run_with(|_| handler())
     }
 }
 
-impl<'input, Result, C: Constraint> Drop for Command<'_, 'input, Result, C> {
+impl<'input, T> Drop for DataCommand<'_, 'input, T> {
     fn drop(&mut self) {
         match &mut self.0 {
             CommandInner::PickCommand { input, finished, .. } => {
@@ -548,25 +619,8 @@ impl<'input, Result, C: Constraint> Drop for Command<'_, 'input, Result, C> {
                 }
             }
             CommandInner::Skip => {}
-            CommandInner::BuildHelpInfo { constraint, help } => {
-                constraint.extend_name(&mut |name| help.path_segment.push(name));
-            }
+            CommandInner::BuildHelpInfo { .. } => {}
         }
-    }
-}
-
-pub struct RunCtx<'a, Data, Result> {
-    data: &'a Data,
-    result: Option<Result>,
-}
-
-impl<'a, Data, Result> RunCtx<'a, Data, Result> {
-    pub fn data(&self) -> &'a Data {
-        self.data
-    }
-
-    pub fn quit(&mut self, result: Result) {
-        self.result = Some(result);
     }
 }
 
@@ -639,6 +693,18 @@ impl HelpTree {
         for branch in &self.branches {
             branch.print_name(indent);
             branch.print_children(indent + 1);
+        }
+    }
+}
+
+pub struct ControlFlow<'a, T> {
+    result: Option<&'a mut Option<T>>,
+}
+
+impl<T> ControlFlow<'_, T> {
+    pub fn quit(&mut self, value: T) {
+        if let Some(result) = &mut self.result {
+            **result = Some(value);
         }
     }
 }
