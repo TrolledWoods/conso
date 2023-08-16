@@ -1,7 +1,159 @@
 //!
-//! An experimental way to build command line interfaces, inspired by immediate mode guis.
+//! A way to build command line interfaces, inspired by immediate mode guis.
 //!
+//! ```
+//! conso::args(|ctx| {
+//!     ctx.command("greet")
+//!         .run(|| {
+//!             println!("Hello world!");
+//!         });
 //!
+//!     ctx.command("order")
+//!         .run(|| {
+//!             println!("I would like a boiled crab, please");
+//!         });
+//! });
+//! ```
+//! In the above example our program can now run with three possible arguments;
+//! * `greet`: This will print `Hello world!`
+//! * `order`: This will print `I would like a boiled crab, please`
+//! * `help`: This will print help information about the usage of the command.
+//!
+//! Notice how the help command is completely auto-generated!
+//! We will also get nice error output if mistakes are found in the input.
+//!
+//! ## Usage
+//! ### More help information
+//! The names of commands may not be enough to describe what they do. Call [Command::description]
+//! to add extra help information to a command.
+//! ```
+//! conso::args(|ctx| {
+//!     ctx.command("greet")
+//!         .description("Give the world a wonderful greeting")
+//!         .run(|| {
+//!             println!("Hello world!");
+//!         });
+//!
+//!     ctx.command("order")
+//!         .description("Order something delicious")
+//!         .run(|| {
+//!             println!("I would like a boiled crab, please");
+//!         });
+//! });
+//! ```
+//!
+//! ### Subcommands
+//! Subcommands can be added by calling [Command::sub_commands]. This provides a new `ctx` that
+//! can be used to add subcommands in the same way as normal commands.
+//! ```
+//! conso::args(|ctx| {
+//!     ctx.command("greet")
+//!         .sub_commands(|ctx| {
+//!             ctx.command("world")
+//!                 .run(|| {
+//!                     println!("Hello world!");
+//!                 });
+//!
+//!             ctx.command("you")
+//!                 .run(|| {
+//!                     println!("Hello, you!");
+//!                 });
+//!         });
+//! });
+//! ```
+//!
+//! [Command::sub_commands] and [Command::run] can be combined. In this case,
+//! the `run` will happen if no valid sub commands were found (and as long as there are no more
+//! arguments given, if there were an error will be emitted instead).
+//! ```
+//! conso::args(|ctx| {
+//!     ctx.command("greet")
+//!         .sub_commands(|ctx| {
+//!             ctx.command("crudely")
+//!                 .run(|| {
+//!                     println!("Heyo world!");
+//!                 });
+//!         })
+//!         .run(|| {
+//!             println!("Hello world!");
+//!         });
+//! });
+//! ```
+//! 
+//! Another way of acheiving the same thing is with [Ctx::otherwise].
+//! ```
+//! conso::args(|ctx| {
+//!     ctx.command("greet")
+//!         .sub_commands(|ctx| {
+//!             ctx.command("crudely")
+//!                 .run(|| {
+//!                     println!("Heyo world!");
+//!                 });
+//!
+//!             ctx.otherwise()
+//!                 .run(|| {
+//!                     println!("Hello world!");
+//!                 });
+//!         });
+//! });
+//! ```
+//!
+//! ### Command groups
+//! If there are a lot of commands and organization starts becoming necessary, it start becoming
+//! necessary to bring out the big guns; good old functions!
+//!
+//! ```
+//! fn greetings(ctx: &mut conso::Ctx) {
+//!     ctx.command("crudely")
+//!         // The help command is of course still automatically generated!
+//!         .description("Crudely greet the world")
+//!         .run(|| {
+//!             println!("Heyo world!");
+//!         });
+//!
+//!     ctx.otherwise()
+//!         .run(|| {
+//!             println!("Hello world!");
+//!         });
+//! }
+//!
+//! conso::args(|ctx| {
+//!     ctx.command("greet")
+//!         .sub_commands(greetings);
+//!
+//!     // This command also gets the same subcommands, but we also add an extra
+//!     // one called `dont`.
+//!     ctx.command("maybegreet")
+//!         .sub_commands(|ctx| {
+//!             ctx.command("dont")
+//!                 .run(|| {});
+//!             greetings(ctx);
+//!         });
+//! });
+//! ```
+//!
+//! ### Interactivity
+//! Sometimes just command line arguments aren't enough. We might want a loop where the user can
+//! input data.
+//!
+//! ## Behind the scenes
+//! The way this auto-generation works is a bit cheeky; and a hint can be found in the signature
+//! of the [`args`] function:
+//! ```
+//! pub fn args(handler: impl FnMut(&mut Ctx<'_, '_>)) {
+//!     todo!();
+//! }
+//! ```
+//! Instead of taking an `FnOnce` closure like you might expect, it takes an `FnMut`. This lets
+//! conso call it several times for different purposes. If the help command is called, or crono
+//! wants to try and find suggested usages after an error has occured, conso will call this
+//! function again, but in a special mode where nothing is really parsed and all `run` calls are
+//! completely skipped.
+//!
+//! What does this mean in practice? Nothing much, mostly you get a really simple way to define
+//! commands, while also getting nice help information for free! The main thing to keep in mind is
+//! not to run complex logic without being inside of a `run` call, since that logic probably should
+//! not run when `help` is called.
 //!
 
 use std::io::Write;
@@ -12,7 +164,8 @@ use std::borrow::Cow;
 
 /// Runs the parser on the command line arguments
 pub fn args(handler: impl FnMut(&mut Ctx<'_, '_>)) {
-    let args: Vec<String> = std::env::args().collect();
+    // HACK: It might be pretty bad to do skip(1) here actually.... it doesn't feel good..
+    let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(|v| &**v).collect();
     parse(&args, handler);
 }
@@ -167,6 +320,10 @@ enum CtxInner<'r, 'input, Result> {
 }
 
 impl<'input, Result> Ctx<'_, 'input, Result> {
+    pub fn otherwise(&mut self) -> Command<'_, 'input, Result, ()> {
+        self.command(())
+    }
+
     #[must_use = "Without using the return value, using this command will always yield an error"]
     pub fn command<C: Constraint>(&mut self, constraint: C) -> Command<'_, 'input, Result, C> {
         match &mut self.0 {
@@ -292,7 +449,7 @@ impl<'r, 'input, Result, C: Constraint> Command<'r, 'input, Result, C> {
 
     pub fn user_loop<SubResult>(mut self, mut handler: impl FnMut(&mut Ctx<'_, '_, SubResult>)) -> Self {
         match &mut self.0 {
-            CommandInner::PickCommand { finished, data, input, .. } => {
+            CommandInner::PickCommand { finished, input, .. } => {
                 if finished.is_none() {
                     if input.iter.next().is_some() {
                         **finished = Some(FinishedState::Error {
@@ -304,7 +461,7 @@ impl<'r, 'input, Result, C: Constraint> Command<'r, 'input, Result, C> {
                     }
 
                     let mut input = String::new();
-                    let result = loop {
+                    loop {
                         input.clear();
                         print!("~> ");
                         std::io::stdout().lock().flush().unwrap();
@@ -373,7 +530,7 @@ impl<'r, 'input, Result, C: Constraint> Command<'r, 'input, Result, C> {
         self
     }
 
-    pub fn run(mut self, handler: impl FnOnce()) -> Self {
+    pub fn run(self, handler: impl FnOnce()) -> Self {
         self.run_with(|_| handler())
     }
 }
@@ -545,6 +702,16 @@ where
         chunks.next()
             .and_then(|chunk| chunk.parse().ok())
             .filter(|v| self.contains(v))
+    }
+}
+
+impl Constraint for () {
+    type Output = ();
+
+    fn extend_name(&self, _callback: &mut impl FnMut(Cow<'static, str>)) {}
+
+    fn parse(self, _input: &mut Segments<'_>) -> Option<Self::Output> {
+        Some(())
     }
 }
 
