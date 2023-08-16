@@ -97,9 +97,83 @@ conso::args(|ctx| {
 });
 ```
 
+### Parsing data
+Sometimes we might want a command to be able to recieve data. This can be acheived
+by calling the `arg` function, specifying the type of data we want to recieve.
+After doing so, our `run` method closure will gain a parameter containing the argument that was passed.
+
+```rust
+conso::args(|ctx| {
+    ctx.command("echo")
+        .arg::<String>()
+        .run(|message| {
+            println!("{}", message);
+        });
+});
+```
+
+If you want several arguments, you can request a tuple of (almost) any size from the `arg` function.
+
+```rust
+conso::args(|ctx| {
+    ctx.command("echo1")
+        .arg::<(String, String)>()
+        .run(|(message1, message2)| {
+            println!("{}, then {}", message1, message2);
+        });
+});
+```
+You can also call the `arg` function several times in succession, but it's more confusing so I will leave that out.
+
+For some arguments you may want to make sure they are within a certain bound. For that there is the `constrained_arg` function!
+It takes in arguments describing the constraints, in this case saying that we want two numbers between 0 and 100.
+```rust
+conso::args(|ctx| {
+    ctx.command("multiply")
+        .constrained_arg((0..100, 0..100))
+        .run(|(a, b)| {
+            println!("{} * {} = {}", a, b, a * b);
+        });
+});
+```
+
+One funny, or maybe scary thing about the `command` function we have been using up until now, is that it actually takes in a constraint
+exactly like `constrained_arg`! If the constraint given is fulfilled, then the command is ran. This means we can
+make crazy commands like this too;
+```rust
+conso::args(|ctx| {
+    ctx.command(0..10)
+        .run(|| {
+            println!("The number you entered was between 0 and 10");
+        });
+
+    ctx.command(100..110)
+        .run(|| {
+            println!("The number you entered was between 100 and 110");
+        });
+
+    // `otherwise` is actually just a wrapper over `ctx.command(())`, since
+    // `()` is a constraint that always passes.
+    ctx.otherwise()
+        .run(|| {
+            println!("You didn't enter a number");
+        });
+});
+```
+
+We can also get the actual value of the entered numbers by using `data_command` instead.
+```rust
+conso::args(|ctx| {
+    ctx.data_command(0..10)
+        .run(|number| {
+            println!("The number you entered was {}", number);
+        });
+});
+```
+
 ### Command groups
-If there are a lot of commands and organization starts becoming necessary, it start becoming
-necessary to bring out the big guns; good old functions!
+If there are a lot of commands and organization starts becoming necessary, we may have
+to bring out the big guns; good old functions!
 
 ```rust
 fn greetings(ctx: &mut conso::Ctx) {
@@ -149,15 +223,28 @@ conso::user_loop(|ctx, control_flow| {
 });
 ```
 
+### Aliases
+Some commands are so common that you might want a shorter name for them. Since command names are really
+just constraints, we can use the `either` function to combine two constraints!
+
+```rust
+conso::user_loop(|ctx, control_flow| {
+    ctx.command(conso::either("q", "quit"))
+        .run(|| {
+            control_flow.quit(());
+        });
+});
+```
+
 As opposed to `args`, the closure here takes an extra argument called `control_flow`, that
 lets you tell conso when the loop should be finished using `quit`. This also allows data to be
 passed to the caller. Other than that, it works exactly the same.
 
-## Behind the scenes
-The way this auto-generation works is a bit cheeky; and a hint can be found in the signature
+### Behind the scenes
+The way the help auto-generation works is a bit cheeky; and a hint can be found in the signature
 of the `args` function:
-```
-pub fn args(handler: impl FnMut(&mut Ctx<'_, '_>)) {
+```rust
+pub fn args(handler: impl FnMut(&mut conso::Ctx<'_, '_>)) {
     todo!();
 }
 ```

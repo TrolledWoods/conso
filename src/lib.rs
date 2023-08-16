@@ -711,13 +711,13 @@ pub trait ConstrainedArg {
     fn parse(&self, input: &mut Segments<'_>) -> Option<Self::Output>;
 }
 
-pub fn either<T>(inner: T) -> Either<T> {
-    Either(inner)
+pub fn either<A, B>(a: A, b: B) -> Either<A, B> {
+    Either(a, b)
 }
 
-pub struct Either<T>(T);
+pub struct Either<A, B>(A, B);
 
-impl<A, B> ConstrainedArg for Either<(A, B)>
+impl<A, B> ConstrainedArg for Either<A, B>
 where
     A: ConstrainedArg,
     B: ConstrainedArg<Output = A::Output>,
@@ -726,7 +726,7 @@ where
 
     fn help(&self, fmt: &mut HelpFmt) {
         fmt.push_word("[");
-        let Either((a, b)) = self;
+        let Either(a, b) = self;
         a.help(fmt);
         fmt.push_word("|");
         b.help(fmt);
@@ -734,7 +734,7 @@ where
     }
 
     fn parse(&self, input: &mut Segments<'_>) -> Option<Self::Output> {
-        let Either((a, b)) = self;
+        let Either(a, b) = self;
 
         {
             let mut temp = input.clone();
@@ -797,38 +797,57 @@ where
     }
 }
 
-impl ConstrainedArg for () {
-    type Output = ();
+macro_rules! impl_tuples {
+    ($($n:ident: $t:ident),*) => {
+        #[allow(warnings)]
+        impl<$($t: ConstrainedArg),*> ConstrainedArg for ($($t,)*) {
+            type Output = ($($t::Output,)*);
 
-    fn help(&self, _fmt: &mut HelpFmt) {}
+            fn help(&self, fmt: &mut HelpFmt) {
+                let ($($n,)*) = self;
+                $(
+                    $n.help(fmt);
+                )*
+            }
 
-    fn parse(&self, _input: &mut Segments<'_>) -> Option<Self::Output> {
-        Some(())
+            fn parse(&self, chunks: &mut Segments<'_>) -> Option<Self::Output> {
+                let ($($n,)*) = self;
+                $(
+                    let $n = $n.parse(chunks)?;
+                )*
+                Some(($($n,)*))
+            }
+        }
+
+        #[allow(warnings)]
+        impl<$($t: Arg),*> Arg for ($($t,)*) {
+            fn help(fmt: &mut HelpFmt) {
+                $(
+                    $t::help(fmt);
+                )*
+            }
+
+            fn parse(chunks: &mut Segments<'_>) -> Option<Self> {
+                $(
+                    let $n = $t::parse(chunks)?;
+                )*
+                Some(($($n,)*))
+            }
+        }
     }
 }
 
-impl<A, B> ConstrainedArg for (A, B)
-where
-    A: ConstrainedArg,
-    B: ConstrainedArg,
-{
-    type Output = (A::Output, B::Output);
+impl_tuples!(a: A, b: B, c: C, d: D, e: E, f: F);
+impl_tuples!(a: A, b: B, c: C, d: D, e: E);
+impl_tuples!(a: A, b: B, c: C, d: D);
+impl_tuples!(a: A, b: B, c: C);
+impl_tuples!(a: A, b: B);
+impl_tuples!(a: A);
+impl_tuples!();
 
-    fn help(&self, fmt: &mut HelpFmt) {
-        let (a, b) = self;
-        a.help(fmt);
-        b.help(fmt);
-    }
+pub struct Unconstrained<T>(std::marker::PhantomData<T>);
 
-    fn parse(&self, chunks: &mut Segments<'_>) -> Option<Self::Output> {
-        let (a, b) = self;
-        Some((a.parse(chunks)?, b.parse(chunks)?))
-    }
-}
-
-struct Unconstrained<T>(std::marker::PhantomData<T>);
-
-fn unconstrained<T>() -> Unconstrained<T> {
+pub fn unconstrained<T>() -> Unconstrained<T> {
     Unconstrained(std::marker::PhantomData)
 }
 

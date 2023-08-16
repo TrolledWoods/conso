@@ -26,7 +26,7 @@ fn main() {
                 println!("{} * {} = {}", a, b, a * b);
             });
         
-        ctx.command("quit")
+        ctx.command(conso::either("q", "quit"))
             .run(|| control_flow.quit(()));
     });
 }
