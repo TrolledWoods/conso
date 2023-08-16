@@ -1,6 +1,6 @@
 A way to build command line interfaces, inspired by immediate mode guis.
 
-```
+```rust
 conso::args(|ctx| {
     ctx.command("greet")
         .run(|| {
@@ -23,9 +23,9 @@ We will also get nice error output if mistakes are found in the input.
 
 ## Usage
 ### More help information
-The names of commands may not be enough to describe what they do. Call [Command::description]
+The names of commands may not be enough to describe what they do. Call `description`
 to add extra help information to a command.
-```
+```rust
 conso::args(|ctx| {
     ctx.command("greet")
         .description("Give the world a wonderful greeting")
@@ -42,9 +42,9 @@ conso::args(|ctx| {
 ```
 
 ### Subcommands
-Subcommands can be added by calling [Command::sub_commands]. This provides a new `ctx` that
+Subcommands can be added by calling `sub_commands`. This provides a new `ctx` that
 can be used to add subcommands in the same way as normal commands.
-```
+```rust
 conso::args(|ctx| {
     ctx.command("greet")
         .sub_commands(|ctx| {
@@ -61,10 +61,10 @@ conso::args(|ctx| {
 });
 ```
 
-[Command::sub_commands] and [Command::run] can be combined. In this case,
+`sub_commands` and `run` can be combined. In this case,
 the `run` will happen if no valid sub commands were found (and as long as there are no more
 arguments given, if there were an error will be emitted instead).
-```
+```rust
 conso::args(|ctx| {
     ctx.command("greet")
         .sub_commands(|ctx| {
@@ -79,8 +79,8 @@ conso::args(|ctx| {
 });
 ```
 
-Another way of acheiving the same thing is with [Ctx::otherwise].
-```
+Another way of acheiving the same thing is with `otherwise`.
+```rust
 conso::args(|ctx| {
     ctx.command("greet")
         .sub_commands(|ctx| {
@@ -101,7 +101,7 @@ conso::args(|ctx| {
 If there are a lot of commands and organization starts becoming necessary, it start becoming
 necessary to bring out the big guns; good old functions!
 
-```
+```rust
 fn greetings(ctx: &mut conso::Ctx) {
     ctx.command("crudely")
         // The help command is of course still automatically generated!
@@ -133,9 +133,9 @@ conso::args(|ctx| {
 
 ### Interactivity
 Sometimes just command line arguments aren't enough. We might want to allow the user to input
-commands in a loop. As it happens [`user_loop`] exists just for this purpose!
+commands in a loop. As it happens `user_loop` exists just for this purpose!
 
-```
+```rust
 conso::user_loop(|ctx, control_flow| {
     ctx.command("greet")
         .run(|| {
@@ -149,13 +149,13 @@ conso::user_loop(|ctx, control_flow| {
 });
 ```
 
-As opposed to [`args`], the closure here takes an extra argument called `control_flow`, that
+As opposed to `args`, the closure here takes an extra argument called `control_flow`, that
 lets you tell conso when the loop should be finished using `quit`. This also allows data to be
-passed to the caller.
+passed to the caller. Other than that, it works exactly the same.
 
 ## Behind the scenes
 The way this auto-generation works is a bit cheeky; and a hint can be found in the signature
-of the [`args`] function:
+of the `args` function:
 ```
 pub fn args(handler: impl FnMut(&mut Ctx<'_, '_>)) {
     todo!();
@@ -172,12 +172,11 @@ commands, while also getting nice help information for free! The main thing to k
 not to run complex logic without being inside of a `run` call, since that logic probably should
 not run when `help` is called.
 
-The idea of the `control_flow` parameter inside of [`user_loop`] has a few big advantages;
-one is that it allows [`Ctx`] to remain generic-less, which is a life-saver when grouping
+The idea of the `control_flow` parameter inside of `user_loop` has a few big advantages;
+one is that it allows `Ctx` to remain generic-less, which is a life-saver when grouping
 commands together. It also allows nested user loops affect the control flows of parent user
-loops easily. Originally the idea was to put a generic parameter on [`Ctx`] describing whether
+loops easily. Originally the idea was to put a generic parameter on `Ctx` describing whether
 it was a loop or not, and if it was a loop what return it had, but that was a pain so I'm much
-happier with this approach. Originally [`Command`] and [`DataCommand`] were also going to be the same
+happier with this approach. Originally `Command` and `DataCommand` were also going to be the same
 type but with generics describing whether or not they had data attached, but that was scrapped
-in favor of two types, with [`Command`] just being a thin wrapper over [`DataCommand`] instead.
-
+in favor of two types, with `Command` just being a thin wrapper over `DataCommand` instead.
