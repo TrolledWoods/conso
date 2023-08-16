@@ -21,7 +21,7 @@ fn main() {
             });
 
         ctx.command("multiply")
-            .arg((0..100, 0..100))
+            .constrained_arg((0..100, 0..100))
             .run(|(a, b)| {
                 println!("{} * {} = {}", a, b, a * b);
             });

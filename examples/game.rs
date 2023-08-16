@@ -81,9 +81,9 @@ fn manage_inventory(ctx: &mut conso::Ctx, game: &mut Game) {
 
     ctx.command("add")
         .description("Adds an item to your inventory")
-        .arg(conso::InputString)
-        .run_with(|data| {
+        .arg::<String>()
+        .run(|name| {
             println!("Added item to the inventory!");
-            game.inventory.push(data.1.clone());
+            game.inventory.push(name.clone());
         });
 }
