@@ -26,7 +26,7 @@ pub fn parse(segments: &[&str], mut handler: impl FnMut(&mut Ctx<'_, '_>)) {
         ["help", segments @ ..] => {
             let mut help = HelpFmt::default();
             let mut finished = None;
-            Command(DataCommand(CommandInner::BuildSubHelpInfo {
+            Command::<()>(DataCommand(CommandInner::BuildSubHelpInfo {
                 input: Segments {
                     original: segments,
                     iter: segments.iter(),
@@ -99,8 +99,10 @@ fn print_finished_state(segments: &[&str], finished_state: FinishedState) {
 }
 
 fn pick_sub_command<'input>(input: &mut Segments<'input>, finished: &mut Option<FinishedState>, mut handler: impl FnMut(&mut Ctx<'_, 'input>), require_finish: bool) {
+    let mut output = None;
     let mut ctx = Ctx(CtxInner::PickCommand {
         input: input.clone(),
+        output: &mut output,
         finished,
     });
     handler(&mut ctx);
@@ -192,11 +194,12 @@ enum FinishedState {
 }
 
 /// The base struct to build "command trees".
-pub struct Ctx<'r, 'input>(CtxInner<'r, 'input>);
+pub struct Ctx<'r, 'input, Ret = ()>(CtxInner<'r, 'input, Ret>);
 
-enum CtxInner<'r, 'input> {
+enum CtxInner<'r, 'input, Ret> {
     PickCommand {
         input: Segments<'input>,
+        output: &'r mut Option<Ret>,
         finished: &'r mut Option<FinishedState>,
     },
     BuildSubHelpInfo {
@@ -209,21 +212,47 @@ enum CtxInner<'r, 'input> {
     },
 }
 
-impl<'input> Ctx<'_, 'input> {
-    pub fn otherwise(&mut self) -> Command<'_, 'input> {
+impl<'input, Ret> Ctx<'_, 'input, Ret> {
+    /// Creates an inner "scope" where data can be returned from the `run` calls. If any inner command
+    /// ran, the `mapper` field will be called with the returned data.
+    pub fn scope<T>(&mut self, mapper: impl FnOnce(T) -> Ret, handler: impl FnOnce(&mut Ctx<'_, 'input, T>)) {
+        let mut inner_output = None;
+
+        match &mut self.0 {
+            CtxInner::PickCommand { input, output, finished } => {
+                let mut ctx = Ctx(CtxInner::PickCommand { input: input.clone(), finished: &mut **finished, output: &mut inner_output });
+                handler(&mut ctx);
+
+                if output.is_none() {
+                    **output = inner_output.map(mapper);
+                }
+            }
+            CtxInner::BuildSubHelpInfo { input, help, finished } => {
+                let mut ctx = Ctx(CtxInner::BuildSubHelpInfo { input: input.clone(), help: &mut **help, finished: &mut **finished });
+                handler(&mut ctx);
+            }
+            CtxInner::BuildHelpInfo { help } => {
+                let mut ctx = Ctx(CtxInner::BuildHelpInfo { help: &mut **help });
+                handler(&mut ctx);
+            }
+        }
+    }
+
+    pub fn otherwise(&mut self) -> Command<'_, 'input, Ret> {
         self.command(())
     }
 
     #[must_use = "Without using the return value, using this command will always yield an error"]
-    pub fn command<C: ConstrainedArg<'input>>(&mut self, constraint: C) -> Command<'_, 'input> {
+    pub fn command<C: ConstrainedArg<'input>>(&mut self, constraint: C) -> Command<'_, 'input, Ret> {
         Command(self.data_command(constraint).map(|_| ()))
     }
 
     #[must_use = "Without using the return value, using this command will always yield an error"]
-    pub fn data_command<C: ConstrainedArg<'input>>(&mut self, constraint: C) -> DataCommand<'_, 'input, C::Output> {
+    pub fn data_command<C: ConstrainedArg<'input>>(&mut self, constraint: C) -> DataCommand<'_, 'input, C::Output, Ret> {
         match &mut self.0 {
             CtxInner::PickCommand {
                 input,
+                output,
                 finished,
             } => {
                 let mut input = input.clone();
@@ -232,6 +261,7 @@ impl<'input> Ctx<'_, 'input> {
                         DataCommand(CommandInner::PickCommand {
                             input,
                             data: Some(data),
+                            output,
                             finished,
                         })
                     }
@@ -277,14 +307,15 @@ impl<'input> Ctx<'_, 'input> {
     }
 }
 
-pub struct Command<'r, 'input>(DataCommand<'r, 'input, ()>);
+pub struct Command<'r, 'input, Ret = ()>(DataCommand<'r, 'input, (), Ret>);
 
-pub struct DataCommand<'r, 'input, T>(CommandInner<'r, 'input, T>);
+pub struct DataCommand<'r, 'input, T, Ret = ()>(CommandInner<'r, 'input, T, Ret>);
 
-enum CommandInner<'r, 'input, T> {
+enum CommandInner<'r, 'input, T, Ret> {
     PickCommand {
         input: Segments<'input>,
         data: Option<T>,
+        output: &'r mut Option<Ret>,
         finished: &'r mut Option<FinishedState>,
     },
     Skip,
@@ -298,7 +329,7 @@ enum CommandInner<'r, 'input, T> {
     },
 }
 
-impl<'r, 'input> Command<'r, 'input> {
+impl<'r, 'input, Ret> Command<'r, 'input, Ret> {
     pub fn description(self, desc: &'static str) -> Self {
         Command(self.0.description(desc))
     }
@@ -373,20 +404,20 @@ impl<'r, 'input> Command<'r, 'input> {
         }
     }
 
-    pub fn arg<T: Arg<'input>>(self) -> DataCommand<'r, 'input, T> {
+    pub fn arg<T: Arg<'input>>(self) -> DataCommand<'r, 'input, T, Ret> {
         self.constrained_arg(unconstrained::<T>())
     }
 
-    pub fn constrained_arg<SubC: ConstrainedArg<'input>>(self, sub_c: SubC) -> DataCommand<'r, 'input, SubC::Output> {
+    pub fn constrained_arg<SubC: ConstrainedArg<'input>>(self, sub_c: SubC) -> DataCommand<'r, 'input, SubC::Output, Ret> {
         self.0.constrained_arg(sub_c).map(|(_, v)| v)
     }
 
-    pub fn run(self, handler: impl FnOnce()) {
+    pub fn run(self, handler: impl FnOnce() -> Ret) {
         self.0.run(|()| handler());
     }
 }
 
-impl<'r, 'input, T> DataCommand<'r, 'input, T> {
+impl<'r, 'input, T, Ret> DataCommand<'r, 'input, T, Ret> {
     pub fn description(mut self, desc: &'static str) -> Self {
         match self.0 {
             CommandInner::BuildHelpInfo { ref mut help, .. } => {
@@ -400,12 +431,13 @@ impl<'r, 'input, T> DataCommand<'r, 'input, T> {
         self
     }
 
-    fn map<OutT>(mut self, mapper: impl FnOnce(T) -> OutT) -> DataCommand<'r, 'input, OutT> {
+    fn map<OutT>(mut self, mapper: impl FnOnce(T) -> OutT) -> DataCommand<'r, 'input, OutT, Ret> {
         match std::mem::replace(&mut self.0, CommandInner::Skip) {
-            CommandInner::PickCommand { input, data, finished } => {
+            CommandInner::PickCommand { input, data, finished, output } => {
                 DataCommand(CommandInner::PickCommand {
                     input,
                     data: data.map(mapper),
+                    output,
                     finished,
                 })
             }
@@ -425,13 +457,13 @@ impl<'r, 'input, T> DataCommand<'r, 'input, T> {
         }
     }
 
-    pub fn arg<V: Arg<'input>>(self) -> DataCommand<'r, 'input, (T, V)> {
+    pub fn arg<V: Arg<'input>>(self) -> DataCommand<'r, 'input, (T, V), Ret> {
         self.constrained_arg(unconstrained::<V>())
     }
 
-    pub fn constrained_arg<SubC: ConstrainedArg<'input>>(mut self, sub_c: SubC) -> DataCommand<'r, 'input, (T, SubC::Output)> {
+    pub fn constrained_arg<SubC: ConstrainedArg<'input>>(mut self, sub_c: SubC) -> DataCommand<'r, 'input, (T, SubC::Output), Ret> {
         match std::mem::replace(&mut self.0, CommandInner::Skip) {
-            CommandInner::PickCommand { finished, data, mut input } => {
+            CommandInner::PickCommand { finished, data, mut input, output } => {
                 if finished.is_none() {
                     let orig_depth = input.depth;
                     match sub_c.parse(&mut input) {
@@ -439,6 +471,7 @@ impl<'r, 'input, T> DataCommand<'r, 'input, T> {
                             DataCommand(CommandInner::PickCommand {
                                 finished,
                                 data: data.map(|data| (data, new_data)),
+                                output,
                                 input,
                             })
                         }
@@ -449,17 +482,14 @@ impl<'r, 'input, T> DataCommand<'r, 'input, T> {
                                 help: None,
                             });
 
-                            DataCommand(CommandInner::PickCommand {
-                                finished,
-                                data: None,
-                                input,
-                            })
+                            DataCommand(CommandInner::Skip)
                         }
                     }
                 } else {
                     DataCommand(CommandInner::PickCommand {
                         finished,
                         data: None,
+                        output,
                         input,
                     })
                 }
@@ -483,11 +513,7 @@ impl<'r, 'input, T> DataCommand<'r, 'input, T> {
                                 help: None,
                             });
 
-                            DataCommand(CommandInner::PickCommand {
-                                finished,
-                                data: None,
-                                input,
-                            })
+                            DataCommand(CommandInner::Skip)
                         }
                     }
                 } else {
@@ -510,9 +536,9 @@ impl<'r, 'input, T> DataCommand<'r, 'input, T> {
         }
     }
 
-    pub fn run(mut self, handler: impl FnOnce(&T)) {
+    pub fn run(mut self, handler: impl FnOnce(&T) -> Ret) {
         match &mut self.0 {
-            CommandInner::PickCommand { finished, data, input, .. } => {
+            CommandInner::PickCommand { finished, data, input, output, .. } => {
                 if finished.is_none() {
                     if input.iter.next().is_some() {
                         **finished = Some(FinishedState::Error {
@@ -523,8 +549,8 @@ impl<'r, 'input, T> DataCommand<'r, 'input, T> {
                         return;
                     }
 
-                    handler(data.as_ref().expect("If our data is none we should be in a finished state"));
-
+                    let result = handler(data.as_ref().expect("If our data is none we should be in a finished state"));
+                    **output = Some(result);
                     **finished = Some(FinishedState::Okay);
                 }
             }
@@ -535,7 +561,7 @@ impl<'r, 'input, T> DataCommand<'r, 'input, T> {
     }
 }
 
-impl<'input, T> Drop for DataCommand<'_, 'input, T> {
+impl<'input, T, Ret> Drop for DataCommand<'_, 'input, T, Ret> {
     fn drop(&mut self) {
         match &mut self.0 {
             CommandInner::PickCommand { input, finished, .. } => {
